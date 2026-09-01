@@ -1,0 +1,74 @@
+name: Validate Docker build configuration
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate Dockerfiles and profiles
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Enable QEMU
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      - name: Configure Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Inspect builder
+        run: docker buildx inspect --bootstrap
+
+      - name: Check shell syntax
+        shell: bash
+        run: |
+          bash -n scripts/ros_entrypoint.sh
+          bash -n scripts/build-base.sh
+          bash -n scripts/build-package.sh
+          bash -n config/packages/fast-lio.env
+          bash -n config/packages/fast-lio.prebuild.sh
+          for profile in config/platforms/*.env; do
+            bash -n "$profile"
+          done
+
+      - name: Validate base Dockerfiles
+        shell: bash
+        run: |
+          for profile in x86 agx-orin-jp62 orin-nano-jp72; do
+            ./scripts/build-base.sh "$profile" check
+          done
+
+      - name: Validate package Dockerfile
+        shell: bash
+        run: |
+          for profile in x86 agx-orin-jp62 orin-nano-jp72; do
+            ./scripts/build-package.sh fast-lio "$profile" check
+          done
+
+      - name: Write validation summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## ROS2 CUDA configuration validation"
+            echo
+            echo "- Base profiles: x86, AGX Orin JP 6.2.2, Orin Nano JP 7.2"
+            echo "- Package example: FAST-LIO with CUDA"
+            echo "- QEMU target: ARM64"
+          } >> "$GITHUB_STEP_SUMMARY"
