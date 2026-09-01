@@ -108,6 +108,10 @@ BUILD_COMMAND=(
   --tag "${IMAGE_REF}"
 )
 
+if [[ -n "${DOCKERFILE_CHECK_SKIP:-}" ]]; then
+  BUILD_COMMAND+=(--build-arg "BUILDKIT_DOCKERFILE_CHECK=skip=${DOCKERFILE_CHECK_SKIP}")
+fi
+
 if [[ -n "${CACHE_FROM:-}" ]]; then
   BUILD_COMMAND+=(--cache-from "${CACHE_FROM}")
 fi
