@@ -1,0 +1,160 @@
+name: Build and publish ROS2 CUDA base images
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    paths:
+      - "docker/base/**"
+      - "scripts/build-base.sh"
+      - "scripts/ros_entrypoint.sh"
+      - "config/platforms/**"
+      - ".github/workflows/build-base-images.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: base-images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.profile }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - x86
+          - agx-orin-jp62
+          - orin-nano-jp72
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Enable QEMU
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      - name: Configure Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push base image
+        id: build
+        shell: bash
+        run: |
+          set -u
+
+          source "config/platforms/${{ matrix.profile }}.env"
+
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          image_ref="ghcr.io/${owner}/${BASE_IMAGE_NAME}:${BASE_IMAGE_TAG}"
+          cache_ref="ghcr.io/${owner}/${BASE_IMAGE_NAME}:buildcache-${PLATFORM_ID}"
+          metrics_file="metrics/base-${PLATFORM_ID}.json"
+
+          mkdir -p metrics
+
+          export IMAGE_REGISTRY=ghcr.io
+          export IMAGE_NAMESPACE="${owner}"
+          export CACHE_FROM="type=registry,ref=${cache_ref}"
+          export CACHE_TO="type=registry,ref=${cache_ref},mode=max"
+
+          started_at="$(date +%s)"
+
+          set +e
+          ./scripts/build-base.sh "${{ matrix.profile }}" push
+          build_exit="$?"
+          set -e
+
+          finished_at="$(date +%s)"
+          duration_seconds="$((finished_at - started_at))"
+
+          if [[ "${build_exit}" -eq 0 ]]; then
+            build_status="success"
+          else
+            build_status="failure"
+          fi
+
+          jq -n \
+            --arg image "${image_ref}" \
+            --arg platform "${TARGET_PLATFORM}" \
+            --arg profile "${PLATFORM_ID}" \
+            --arg status "${build_status}" \
+            --arg git_sha "${GITHUB_SHA}" \
+            --arg build_type "cross" \
+            --argjson duration_seconds "${duration_seconds}" \
+            '{
+              image: $image,
+              platform: $platform,
+              profile: $profile,
+              status: $status,
+              git_sha: $git_sha,
+              build_type: $build_type,
+              duration_seconds: $duration_seconds
+            }' > "${metrics_file}"
+
+          echo "image_ref=${image_ref}" >> "$GITHUB_OUTPUT"
+          echo "metrics_file=${metrics_file}" >> "$GITHUB_OUTPUT"
+
+          exit "${build_exit}"
+
+      - name: Inspect published image
+        if: success()
+        shell: bash
+        run: |
+          docker buildx imagetools inspect \
+            "${{ steps.build.outputs.image_ref }}"
+
+          docker buildx imagetools inspect \
+            --raw "${{ steps.build.outputs.image_ref }}" \
+            > "metrics/manifest-${{ matrix.profile }}.json"
+
+      - name: Upload build metrics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: base-metrics-${{ matrix.profile }}
+          path: metrics/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Write build summary
+        if: always()
+        shell: bash
+        run: |
+          metrics_file="metrics/base-${{ matrix.profile }}.json"
+
+          if [[ -f "${metrics_file}" ]]; then
+            image_ref="$(jq -r '.image' "${metrics_file}")"
+            status="$(jq -r '.status' "${metrics_file}")"
+            duration="$(jq -r '.duration_seconds' "${metrics_file}")"
+          else
+            image_ref="unavailable"
+            status="failure"
+            duration="unavailable"
+          fi
+
+          {
+            echo "## Base image: ${{ matrix.profile }}"
+            echo
+            echo "- Status: ${status}"
+            echo "- Image: \`${image_ref}\`"
+            echo "- Duration: ${duration} seconds"
+            echo "- Build method: GitHub-hosted x86 runner with Buildx/QEMU"
+          } >> "$GITHUB_STEP_SUMMARY"
