@@ -1,11 +1,10 @@
 # syntax=docker/dockerfile:1.7
 
-ARG L4T_CUDA_IMAGE=nvcr.io/nvidia/l4t-cuda:12.6.11-runtime
+ARG L4T_CUDA_IMAGE=nvcr.io/nvidia/12.6.11-devel:12.6.11-devel-aarch64-ubuntu22.04
 FROM ${L4T_CUDA_IMAGE}
 
 ARG ROS_DISTRO=humble
 ARG ROS_APT_SOURCE_VERSION=1.2.0
-ARG CUDA_TOOLKIT_PACKAGE=cuda-toolkit-12-6
 ARG DEBIAN_FRONTEND=noninteractive
 ARG TARGETARCH
 
@@ -31,7 +30,6 @@ RUN apt-get update \
         curl \
         locales \
         software-properties-common \
-        ${CUDA_TOOLKIT_PACKAGE} \
     && locale-gen en_US en_US.UTF-8 \
     && update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 \
     && add-apt-repository universe \
