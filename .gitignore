@@ -1,0 +1,7 @@
+build/
+install/
+log/
+.env
+*.log
+*.tar
+.DS_Store
