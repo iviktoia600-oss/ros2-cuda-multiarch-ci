@@ -92,6 +92,7 @@ ARG REPOSITORY_URL
 ARG REPOSITORY_REF=main
 ARG CUDA_ARCHITECTURES
 ARG ROSDEP_SKIP_KEYS=""
+ARG COLCON_PACKAGES_SELECT=""
 ARG PACKAGE_CONFIG=default
 ARG TARGETPLATFORM
 ARG TARGETARCH
@@ -117,6 +118,16 @@ RUN --mount=type=bind,from=builder,source=/opt/ros_ws/src,target=/tmp/ros_ws/src
     && rosdep install "${ROSDEP_ARGS[@]}"
 
 COPY --from=builder /opt/ros_ws/install /opt/ros_ws/install
+
+RUN source "/opt/ros/${ROS_DISTRO}/setup.bash" \
+    && source /opt/ros_ws/install/setup.bash \
+    && nvcc --version \
+    && if [[ -n "${COLCON_PACKAGES_SELECT}" ]]; then \
+         read -r -a SELECTED_PACKAGES <<< "${COLCON_PACKAGES_SELECT}"; \
+         for package in "${SELECTED_PACKAGES[@]}"; do \
+           ros2 pkg prefix "${package}"; \
+         done; \
+       fi
 
 LABEL io.armmeh.package.repository="${REPOSITORY_URL}" \
       io.armmeh.package.revision="${REPOSITORY_REF}" \
