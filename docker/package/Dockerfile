@@ -48,7 +48,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         --from-paths src \
         --ignore-src \
         --rosdistro "${ROS_DISTRO}" \
-        --recursive \
         --yes \
     ) \
     && if [[ -n "${ROSDEP_SKIP_KEYS}" ]]; then \
@@ -109,7 +108,6 @@ RUN --mount=type=bind,from=builder,source=/opt/ros_ws/src,target=/tmp/ros_ws/src
         --from-paths /tmp/ros_ws/src \
         --ignore-src \
         --rosdistro "${ROS_DISTRO}" \
-        --recursive \
         --yes \
     ) \
     && if [[ -n "${ROSDEP_SKIP_KEYS}" ]]; then \
