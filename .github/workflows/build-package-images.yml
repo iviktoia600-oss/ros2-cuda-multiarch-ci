@@ -1,0 +1,153 @@
+name: Build and publish ROS2 CUDA package images
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    paths:
+      - "docker/package/**"
+      - "config/packages/**"
+      - "config/platforms/**"
+      - "scripts/build-package.sh"
+      - "scripts/ros_entrypoint.sh"
+      - ".github/workflows/build-package-images.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: package-images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build FAST-LIO for ${{ matrix.profile }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - x86
+          - agx-orin-jp62
+          - orin-nano-jp72
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Enable QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Configure Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push FAST-LIO image
+        id: build
+        shell: bash
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          set -euo pipefail
+
+          source "config/platforms/${PROFILE}.env"
+
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          package_image_name="ros2-cuda-fast-lio-${PLATFORM_ID}"
+          package_tag="${BASE_IMAGE_TAG}"
+          image_ref="ghcr.io/${owner}/${package_image_name}:${package_tag}"
+          cache_ref="ghcr.io/${owner}/${package_image_name}:buildcache-${PLATFORM_ID}"
+          base_image="ghcr.io/${owner}/${BASE_IMAGE_NAME}:${BASE_IMAGE_TAG}"
+
+          export IMAGE_REGISTRY="ghcr.io"
+          export IMAGE_NAMESPACE="${owner}"
+          export PACKAGE_IMAGE_NAME="${package_image_name}"
+          export PACKAGE_IMAGE_TAG="${package_tag}"
+          export CACHE_FROM="type=registry,ref=${cache_ref}"
+          export CACHE_TO="type=registry,ref=${cache_ref},mode=max"
+
+          started_at="$(date +%s)"
+          status="success"
+
+          if ! ./scripts/build-package.sh fast-lio "${PROFILE}" push; then
+            status="failure"
+          fi
+
+          finished_at="$(date +%s)"
+          duration_seconds="$((finished_at - started_at))"
+
+          mkdir -p metrics
+          jq -n \
+            --arg image "${image_ref}" \
+            --arg base_image "${base_image}" \
+            --arg package "fast-lio" \
+            --arg profile "${PROFILE}" \
+            --arg platform "${TARGET_PLATFORM}" \
+            --arg cuda_architectures "${CUDA_ARCHITECTURES}" \
+            --arg status "${status}" \
+            --arg git_sha "${GITHUB_SHA}" \
+            --argjson duration_seconds "${duration_seconds}" \
+            '{
+              image: $image,
+              base_image: $base_image,
+              package: $package,
+              profile: $profile,
+              platform: $platform,
+              cuda_architectures: $cuda_architectures,
+              build_type: "cross-qemu",
+              status: $status,
+              git_sha: $git_sha,
+              duration_seconds: $duration_seconds
+            }' > "metrics/package-${PROFILE}.json"
+
+          echo "image_ref=${image_ref}" >> "${GITHUB_OUTPUT}"
+          echo "duration_seconds=${duration_seconds}" >> "${GITHUB_OUTPUT}"
+
+          if [[ "${status}" != "success" ]]; then
+            exit 1
+          fi
+
+      - name: Inspect published image
+        if: steps.build.outcome == 'success'
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.build.outputs.image_ref }}
+        run: docker buildx imagetools inspect "${IMAGE_REF}"
+
+      - name: Upload build metrics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: package-metrics-${{ matrix.profile }}
+          path: metrics/package-${{ matrix.profile }}.json
+          if-no-files-found: warn
+
+      - name: Write build summary
+        if: always()
+        shell: bash
+        env:
+          PROFILE: ${{ matrix.profile }}
+          IMAGE_REF: ${{ steps.build.outputs.image_ref }}
+          DURATION: ${{ steps.build.outputs.duration_seconds }}
+          RESULT: ${{ steps.build.outcome }}
+        run: |
+          {
+            echo "## FAST-LIO: ${PROFILE}"
+            echo
+            echo "- Status: ${RESULT}"
+            echo "- Image: \`${IMAGE_REF:-unavailable}\`"
+            echo "- Duration: ${DURATION:-unavailable} seconds"
+            echo "- Build method: GitHub-hosted runner with Buildx/QEMU"
+          } >> "${GITHUB_STEP_SUMMARY}"
